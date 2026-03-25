@@ -274,7 +274,7 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
           <thead><tr>
             <th></th><th>Rounding</th><th>Offset</th><th>Trades</th><th>Win Rate</th>
             <th>Profit Factor</th><th>Total P&L pts</th><th>Expectancy</th>
-            <th>Max DD</th><th>Avg Days</th>
+            <th>Max DD</th><th>Max DD Dur</th><th>Avg DD Dur</th><th>Avg Days</th>
           </tr></thead>
           <tbody id="sweepBody"></tbody>
         </table>
@@ -570,6 +570,8 @@ function renderStats(m) {
     { l: 'Avg Win',       v: '+' + m.avg_win_points + ' pts',            c: 'pos' },
     { l: 'Avg Loss',      v: m.avg_loss_points + ' pts',                 c: 'neg' },
     { l: 'Max Drawdown',  v: fmtN(m.max_drawdown_points) + ' pts',      c: 'neg' },
+    { l: 'Max DD Dur',    v: (m.max_drawdown_duration || 0) + 'd',       c: 'neg' },
+    { l: 'Avg DD Dur',    v: (m.avg_drawdown_duration || 0) + 'd',       c: 'neg' },
     { l: 'Best Trade',    v: '+' + m.max_win_points + ' pts',            c: 'pos' },
     { l: 'Worst Trade',   v: m.max_loss_points + ' pts',                 c: 'neg' },
     { l: 'Avg Hold',      v: m.avg_days_held + 'd',                      c: 'gold' },
@@ -715,6 +717,8 @@ function renderSweep(rows) {
       <td class="${r.total_pnl_points>=0?'pos':'neg'}">${fmtN(r.total_pnl_points)}</td>
       <td class="${r.expectancy_points>=0?'pos':'neg'}">${fmtPt(r.expectancy_points)}</td>
       <td class="neg">${fmtN(r.max_drawdown_points)}</td>
+      <td class="neg">${r.max_drawdown_duration || 0}d</td>
+      <td class="neg">${r.avg_drawdown_duration || 0}d</td>
       <td>${r.avg_days_held}d</td>
     </tr>`;
   }).join('');
@@ -875,7 +879,7 @@ function renderSavedTab() {
       html += `<thead><tr>
         <th>Rounding</th><th>Offset</th><th>Start</th><th>End</th>
         <th>Trades</th><th>Win Rate</th><th>Profit Factor</th>
-        <th>Total P&L</th><th>Expectancy</th><th>Max DD</th><th>Avg Days</th><th></th>
+        <th>Total P&L</th><th>Expectancy</th><th>Max DD</th><th>Max DD Dur</th><th>Avg DD Dur</th><th>Avg Days</th><th></th>
       </tr></thead><tbody>`;
 
       entries.forEach(e => {
