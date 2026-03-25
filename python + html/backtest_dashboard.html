@@ -98,6 +98,39 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
+/* ── Save modal ── */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:500; align-items:center; justify-content:center; }
+.modal-overlay.show { display:flex; }
+.modal-box { background:var(--surf2); border:1px solid var(--border2); border-radius:14px; padding:28px 32px; width:380px; max-width:92vw; }
+.modal-title { font-size:15px; font-weight:700; margin-bottom:18px; color:var(--accent); font-family:var(--sans); }
+.modal-label { font-size:10px; color:var(--muted); font-family:var(--mono); text-transform:uppercase; letter-spacing:0.8px; margin-bottom:4px; }
+.modal-input { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:9px 12px; border-radius:7px; font-family:var(--mono); font-size:12px; outline:none; margin-bottom:14px; }
+.modal-input:focus { border-color:var(--accent); }
+.modal-select { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:9px 12px; border-radius:7px; font-family:var(--mono); font-size:12px; outline:none; margin-bottom:18px; }
+.modal-btns { display:flex; gap:10px; justify-content:flex-end; }
+.modal-btns button { padding:8px 20px; border-radius:7px; font-family:var(--sans); font-weight:700; font-size:12px; cursor:pointer; border:none; }
+.modal-cancel { background:transparent; color:var(--muted2); border:1px solid var(--border) !important; }
+.modal-confirm { background:var(--accent); color:var(--bg); }
+
+/* ── Accordion (Saved tab) ── */
+.accordion-group { margin-bottom:10px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--surf); }
+.accordion-header { padding:12px 18px; cursor:pointer; display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:13px; font-weight:700; color:var(--accent); user-select:none; background:var(--surf); transition:background 0.15s; }
+.accordion-header:hover { background:var(--surf2); }
+.accordion-arrow { transition:transform 0.2s; font-size:10px; color:var(--muted); }
+.accordion-header.open .accordion-arrow { transform:rotate(90deg); }
+.accordion-body { display:none; }
+.accordion-header.open + .accordion-body { display:block; }
+.sub-group { margin:0 12px 8px 12px; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.sub-header { padding:8px 14px; cursor:pointer; display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; font-weight:600; color:var(--muted2); background:var(--surf2); user-select:none; }
+.sub-header:hover { background:var(--surf3); }
+.sub-header.open .accordion-arrow { transform:rotate(90deg); }
+.sub-body { display:none; }
+.sub-header.open + .sub-body { display:block; }
+.save-star { cursor:pointer; background:none; border:none; color:var(--muted); font-size:15px; padding:2px 6px; transition:color 0.15s; }
+.save-star:hover { color:var(--accent); }
+.btn-danger { background:rgba(248,113,113,0.1); color:var(--red); border:1px solid rgba(248,113,113,0.3); padding:5px 12px; border-radius:6px; font-family:var(--mono); font-size:11px; cursor:pointer; }
+.btn-danger:hover { background:rgba(248,113,113,0.2); }
+
 @media (max-width: 900px) {
   .charts-grid, .chart3-grid { grid-template-columns: 1fr; }
 }
@@ -138,6 +171,10 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
     <input type="date" id="cfgStart" value="2020-01-01">
   </div>
   <div class="cfg-group">
+    <span class="cfg-label">End Date</span>
+    <input type="date" id="cfgEnd">
+  </div>
+  <div class="cfg-group">
     <span class="cfg-label">Rounding</span>
     <input type="number" id="cfgRounding" value="500" step="50" min="10">
   </div>
@@ -159,6 +196,7 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
   <button class="tab active" onclick="switchTab('overview', this)">Overview</button>
   <button class="tab" onclick="switchTab('trades', this)">Trades</button>
   <button class="tab" onclick="switchTab('sweep', this)">Sweep</button>
+  <button class="tab" onclick="switchTab('saved', this)">Saved</button>
 </div>
 
 <!-- Main -->
@@ -180,6 +218,9 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
       <div class="card"><div class="sec-title">Long vs Short P&L</div><canvas id="dirChart" height="160"></canvas></div>
       <div class="card"><div class="sec-title">Direction Breakdown</div><div id="breakdownTable" style="margin-top:4px"></div></div>
       <div class="card"><div class="sec-title">Days Held Distribution</div><canvas id="daysChart" height="160"></canvas></div>
+    </div>
+    <div style="text-align:right;margin-top:14px">
+      <button class="btn-outline" id="btnSaveOverview" onclick="saveFromOverview()" style="display:none">★ Save This Result</button>
     </div>
     <div id="emptyOverview" class="empty" style="display:none">
       <div>No data loaded</div>
@@ -231,7 +272,7 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
       <div class="table-scroll">
         <table id="sweepTable">
           <thead><tr>
-            <th>Rounding</th><th>Offset</th><th>Trades</th><th>Win Rate</th>
+            <th></th><th>Rounding</th><th>Offset</th><th>Trades</th><th>Win Rate</th>
             <th>Profit Factor</th><th>Total P&L pts</th><th>Expectancy</th>
             <th>Max DD</th><th>Avg Days</th>
           </tr></thead>
@@ -241,6 +282,38 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
     </div>
   </div>
 
+  <!-- Saved -->
+  <div id="tab-saved" class="tab-content">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div class="sec-title" style="margin-bottom:0">Saved Backtests</div>
+      <button class="btn-danger" onclick="clearAllSaved()">🗑 Clear All</button>
+    </div>
+    <div id="savedAccordion"></div>
+    <div id="emptySaved" class="empty" style="display:none">
+      <div>No saved backtests yet</div>
+      <div style="font-size:11px;color:var(--muted)">Run a backtest then click ★ Save on Overview or Sweep rows</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Save Modal -->
+<div class="modal-overlay" id="saveModal">
+  <div class="modal-box">
+    <div class="modal-title">★ Save Backtest</div>
+    <div class="modal-label">Instrument Name</div>
+    <input class="modal-input" id="saveInstrument" placeholder="e.g. Nifty, BankNifty, Gold…">
+    <div class="modal-label">Time Period</div>
+    <select class="modal-select" id="saveTimePeriod">
+      <option value="Daily">Daily</option>
+      <option value="Weekly">Weekly</option>
+      <option value="Monthly">Monthly</option>
+    </select>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closeSaveModal()">Cancel</button>
+      <button class="modal-confirm" onclick="confirmSave()">Save</button>
+    </div>
+  </div>
 </div>
 
 <!-- Status bar -->
@@ -254,6 +327,9 @@ td { padding: 9px 13px; white-space: nowrap; color: var(--text); border-bottom: 
 const SERVER = 'http://localhost:5000';
 let allTrades = [];
 let charts = {};
+let lastMetrics = null;   // stash most recent backtest metrics for save
+let lastParams  = null;   // stash most recent params
+let pendingSaveData = null; // data waiting for modal confirm
 
 // ── Chart helpers ──────────────────────────────
 const CHART_OPTS = {
@@ -288,6 +364,7 @@ async function runBacktest() {
   hideError();
   const ticker   = document.getElementById('cfgTicker').value;
   const start    = document.getElementById('cfgStart').value;
+  const end      = document.getElementById('cfgEnd').value;
   const rounding = parseInt(document.getElementById('cfgRounding').value);
   const offset   = parseFloat(document.getElementById('cfgOffset').value);
   const lot      = parseInt(document.getElementById('cfgLot').value);
@@ -298,7 +375,7 @@ async function runBacktest() {
       const res = await fetch(`${SERVER}/api/backtest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: uploadedFileName || 'Custom', start, rounding, offset, lot_size: lot, ohlcv: uploadedOHLCV }),
+        body: JSON.stringify({ ticker: uploadedFileName || 'Custom', start, end, rounding, offset, lot_size: lot, ohlcv: uploadedOHLCV }),
         signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Server error'); }
@@ -316,7 +393,7 @@ async function runBacktest() {
     const res = await fetch(`${SERVER}/api/backtest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker, start, rounding, offset, lot_size: lot }),
+      body: JSON.stringify({ ticker, start, end, rounding, offset, lot_size: lot }),
       signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Server error'); }
@@ -335,6 +412,7 @@ async function runSweep() {
   hideError();
   const ticker    = document.getElementById('cfgTicker').value;
   const start     = document.getElementById('cfgStart').value;
+  const end       = document.getElementById('cfgEnd').value;
   const lot       = parseInt(document.getElementById('cfgLot').value);
   const roundings = document.getElementById('sweepR').value.split(',').map(Number).filter(Boolean);
   const offsets   = document.getElementById('sweepO').value.split(',').map(Number).filter(Boolean);
@@ -344,7 +422,7 @@ async function runSweep() {
       const res = await fetch(`${SERVER}/api/sweep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: uploadedFileName || 'Custom', start, roundings, offsets, lot_size: lot, ohlcv: uploadedOHLCV }),
+        body: JSON.stringify({ ticker: uploadedFileName || 'Custom', start, end, roundings, offsets, lot_size: lot, ohlcv: uploadedOHLCV }),
         signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Sweep error'); }
@@ -363,7 +441,7 @@ async function runSweep() {
     const res = await fetch(`${SERVER}/api/sweep`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker, start, roundings, offsets, lot_size: lot }),
+      body: JSON.stringify({ ticker, start, end, roundings, offsets, lot_size: lot }),
       signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'Sweep error'); }
@@ -459,6 +537,16 @@ function renderAll(data, ticker, rounding, offset) {
   allTrades = data.trades || [];
   const m   = data.metrics;
   if (!m || m.error) { showError(m?.error || 'No trades generated'); return; }
+
+  // Stash for Save button
+  lastMetrics = m;
+  lastParams  = {
+    ticker,
+    start: document.getElementById('cfgStart').value,
+    end:   document.getElementById('cfgEnd').value,
+    rounding, offset
+  };
+  document.getElementById('btnSaveOverview').style.display = 'inline-block';
 
   renderStats(m);
   renderPnlChart(allTrades);
@@ -612,12 +700,15 @@ function renderTradeTable(trades, filter) {
 }
 
 // ── Sweep table ─────────────────────────────────
+let lastSweepRows = []; // keep for star save
 function renderSweep(rows) {
+  lastSweepRows = rows;
   document.getElementById('sweepBody').innerHTML = rows.map((r, i) => {
     const pf     = r.profit_factor;
     const pfNum  = pf === Infinity ? 999 : +pf;
     const pfColor = pfNum >= 1.5 ? 'var(--teal)' : pfNum >= 1 ? 'var(--accent)' : 'var(--red)';
     return `<tr style="background:${i===0?'rgba(240,180,41,0.05)':'transparent'}">
+      <td><button class="save-star" onclick="saveFromSweep(${i})" title="Save this result">☆</button></td>
       <td>${r.rounding}</td><td>${r.offset}</td><td>${r.total_trades}</td>
       <td class="${r.win_rate>=50?'pos':'neg'}">${r.win_rate}%</td>
       <td style="color:${pfColor};font-weight:700">${pf}</td>
@@ -652,7 +743,168 @@ function showError(msg) { const b = document.getElementById('errorBanner'); b.te
 function hideError()    { document.getElementById('errorBanner').style.display = 'none'; }
 
 // ── Init ─────────────────────────────────────────
-window.addEventListener('load', () => checkServer());
+window.addEventListener('load', () => { checkServer(); renderSavedTab(); });
+
+// =============================================================
+// SAVED BACKTESTS — localStorage persistence + accordion UI
+// =============================================================
+const LS_KEY = 'saved_backtests';
+
+function getSaved() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || []; }
+  catch { return []; }
+}
+function putSaved(arr) { localStorage.setItem(LS_KEY, JSON.stringify(arr)); }
+
+// ── Save triggers ────────────────────────────────
+function saveFromOverview() {
+  if (!lastMetrics || !lastParams) return;
+  pendingSaveData = {
+    rounding:    lastParams.rounding,
+    offset:      lastParams.offset,
+    start:       lastParams.start,
+    end:         lastParams.end,
+    trades:      lastMetrics.total_trades,
+    win_rate:    lastMetrics.win_rate,
+    profit_factor: lastMetrics.profit_factor,
+    total_pnl:   lastMetrics.total_pnl_points,
+    expectancy:  lastMetrics.expectancy_points,
+    max_dd:      lastMetrics.max_drawdown_points,
+    avg_days:    lastMetrics.avg_days_held,
+  };
+  // Pre-fill instrument name from ticker/filename
+  document.getElementById('saveInstrument').value = lastParams.ticker || '';
+  openSaveModal();
+}
+
+function saveFromSweep(idx) {
+  const r = lastSweepRows[idx];
+  if (!r) return;
+  pendingSaveData = {
+    rounding:    r.rounding,
+    offset:      r.offset,
+    start:       document.getElementById('cfgStart').value,
+    end:         document.getElementById('cfgEnd').value,
+    trades:      r.total_trades,
+    win_rate:    r.win_rate,
+    profit_factor: r.profit_factor,
+    total_pnl:   r.total_pnl_points,
+    expectancy:  r.expectancy_points,
+    max_dd:      r.max_drawdown_points,
+    avg_days:    r.avg_days_held,
+  };
+  const ticker = uploadedFileName || document.getElementById('cfgTicker').selectedOptions[0]?.text || '';
+  document.getElementById('saveInstrument').value = ticker;
+  openSaveModal();
+}
+
+// ── Modal control ───────────────────────────────
+function openSaveModal() { document.getElementById('saveModal').classList.add('show'); }
+function closeSaveModal() { document.getElementById('saveModal').classList.remove('show'); pendingSaveData = null; }
+
+function confirmSave() {
+  const instrument = document.getElementById('saveInstrument').value.trim();
+  const period     = document.getElementById('saveTimePeriod').value;
+  if (!instrument) { alert('Please enter an instrument name.'); return; }
+  if (!pendingSaveData) { closeSaveModal(); return; }
+
+  const entry = {
+    id:         Date.now(),
+    instrument,
+    period,
+    ...pendingSaveData,
+    savedAt:    new Date().toLocaleString('en-IN'),
+  };
+
+  const saved = getSaved();
+  saved.push(entry);
+  putSaved(saved);
+  closeSaveModal();
+  renderSavedTab();
+  setStatus(`★ Saved · ${instrument} · ${period} · R=${entry.rounding} · O=${entry.offset}`);
+}
+
+// ── Delete ────────────────────────────────────────
+function deleteSaved(id) {
+  putSaved(getSaved().filter(e => e.id !== id));
+  renderSavedTab();
+}
+
+function clearAllSaved() {
+  if (!confirm('Delete all saved backtests?')) return;
+  putSaved([]);
+  renderSavedTab();
+}
+
+// ── Accordion rendering ─────────────────────────
+function renderSavedTab() {
+  const saved = getSaved();
+  const container = document.getElementById('savedAccordion');
+  const empty     = document.getElementById('emptySaved');
+
+  if (!saved.length) {
+    container.innerHTML = '';
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Group: instrument → period → entries[]
+  const groups = {};
+  saved.forEach(e => {
+    if (!groups[e.instrument]) groups[e.instrument] = {};
+    if (!groups[e.instrument][e.period]) groups[e.instrument][e.period] = [];
+    groups[e.instrument][e.period].push(e);
+  });
+
+  let html = '';
+  for (const [inst, periods] of Object.entries(groups)) {
+    const totalEntries = Object.values(periods).reduce((s, a) => s + a.length, 0);
+    html += `<div class="accordion-group">`;
+    html += `<div class="accordion-header open" onclick="this.classList.toggle('open')">`;
+    html += `<span class="accordion-arrow">▶</span> ${inst} <span style="font-weight:400;font-size:11px;color:var(--muted2);margin-left:6px">(${totalEntries})</span>`;
+    html += `</div>`;
+    html += `<div class="accordion-body">`;
+
+    for (const [period, entries] of Object.entries(periods)) {
+      html += `<div class="sub-group">`;
+      html += `<div class="sub-header open" onclick="this.classList.toggle('open')">`;
+      html += `<span class="accordion-arrow">▶</span> ${period} <span style="font-weight:400;font-size:10px;color:var(--muted);margin-left:4px">(${entries.length})</span>`;
+      html += `</div>`;
+      html += `<div class="sub-body"><div class="table-scroll"><table>`;
+      html += `<thead><tr>
+        <th>Rounding</th><th>Offset</th><th>Start</th><th>End</th>
+        <th>Trades</th><th>Win Rate</th><th>Profit Factor</th>
+        <th>Total P&L</th><th>Expectancy</th><th>Max DD</th><th>Avg Days</th><th></th>
+      </tr></thead><tbody>`;
+
+      entries.forEach(e => {
+        const pfNum = e.profit_factor === Infinity ? 999 : +e.profit_factor;
+        const pfColor = pfNum >= 1.5 ? 'var(--teal)' : pfNum >= 1 ? 'var(--accent)' : 'var(--red)';
+        html += `<tr>
+          <td>${e.rounding}</td><td>${e.offset}</td>
+          <td>${e.start || '-'}</td><td>${e.end || '-'}</td>
+          <td>${e.trades}</td>
+          <td class="${e.win_rate>=50?'pos':'neg'}">${e.win_rate}%</td>
+          <td style="color:${pfColor};font-weight:700">${e.profit_factor}</td>
+          <td class="${e.total_pnl>=0?'pos':'neg'}">${fmtN(e.total_pnl)}</td>
+          <td class="${e.expectancy>=0?'pos':'neg'}">${fmtPt(e.expectancy)}</td>
+          <td class="neg">${fmtN(e.max_dd)}</td>
+          <td>${e.avg_days}d</td>
+          <td><button class="btn-danger" onclick="deleteSaved(${e.id})" style="padding:2px 8px;font-size:10px">🗑</button></td>
+        </tr>`;
+      });
+
+      html += `</tbody></table></div></div>`; // sub-body close
+      html += `</div>`; // sub-group close
+    }
+
+    html += `</div>`; // accordion-body close
+    html += `</div>`; // accordion-group close
+  }
+
+  container.innerHTML = html;
+}
 </script>
 </body>
 </html>

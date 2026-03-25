@@ -77,6 +77,7 @@ def backtest():
     b        = request.get_json(force=True)
     ticker   = b.get('ticker',   '^NSEI')
     start    = b.get('start',    '2020-01-01')
+    end      = b.get('end',      None)
     rounding = int(b.get('rounding', 500))
     offset   = float(b.get('offset',   10))
     lot_size = int(b.get('lot_size',    1))
@@ -98,8 +99,8 @@ def backtest():
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             df = df.dropna(subset=['open', 'high', 'low', 'close'])
         else:
-            df = load_yfinance(ticker, start)
-        result = run_backtest(df, start, rounding, offset, ticker, lot_size)
+            df = load_yfinance(ticker, start, end)
+        result = run_backtest(df, start, end, rounding, offset, ticker, lot_size)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -110,6 +111,7 @@ def sweep():
     b         = request.get_json(force=True)
     ticker    = b.get('ticker',    '^NSEI')
     start     = b.get('start',     '2020-01-01')
+    end       = b.get('end',       None)
     roundings = b.get('roundings', [250, 500, 750, 1000])
     offsets   = b.get('offsets',   [5, 10, 15, 20])
     lot_size  = int(b.get('lot_size', 1))
@@ -127,9 +129,9 @@ def sweep():
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             df = df.dropna(subset=['open', 'high', 'low', 'close'])
         else:
-            df = load_yfinance(ticker, start)
+            df = load_yfinance(ticker, start, end)
             
-        result = parameter_sweep(df, start, roundings, offsets, ticker)
+        result = parameter_sweep(df, start, end, roundings, offsets, ticker)
         return jsonify(result.to_dict(orient='records'))
     except Exception as e:
         return jsonify({'error': str(e)}), 400

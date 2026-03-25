@@ -32,9 +32,13 @@ const thSt={padding:"9px 13px",textAlign:"left",color:T.muted,fontWeight:400,tex
 const flr=(p,r)=>Math.floor(p/r)*r, cl=(p,r)=>Math.ceil(p/r)*r;
 const dB=(d1,d2)=>Math.round((new Date(d2)-new Date(d1))/86400000);
 
-function runEngine(ohlcv,startDate,rounding,offset,lotSize=1){
+function runEngine(ohlcv,startDate,endDate,rounding,offset,lotSize=1){
   const start=new Date(startDate).getTime();
-  const data=ohlcv.filter(r=>new Date(r.date).getTime()>=start);
+  const endLimit=endDate?new Date(endDate).getTime():Infinity;
+  const data=ohlcv.filter(r=>{
+    const t=new Date(r.date).getTime();
+    return t>=start && t<=endLimit;
+  });
   if(!data.length) return {trades:[],metrics:null};
   const trades=[];
   let state="FLAT",posUnits=0,entryPrice=null,entryDate=null;
@@ -60,6 +64,17 @@ function runEngine(ohlcv,startDate,rounding,offset,lotSize=1){
       else{const nc=cl(high,rounding);if(nc<activeLevel)activeLevel=nc;}
     }
   }
+
+  // Force close any open position at the end date's close price (Mark to Market)
+  if(state!=="FLAT" && data.length){
+    const lastRow=data[data.length-1];
+    const dt=lastRow.date;
+    const c=lastRow.close;
+    const pnlPts=state==="LONG"?c-entryPrice:entryPrice-c;
+    const pnl=pnlPts*posUnits*lotSize;
+    trades.push({trade_id:tradeId,direction:state,entry_date:entryDate,entry_price:entryPrice,exit_date:dt+" (End)",exit_price:c,units:posUnits,pnl_points:+pnlPts.toFixed(2),pnl:+pnl.toFixed(2),days_held:Math.max(dB(entryDate,dt),0)});
+  }
+
   return{trades,metrics:calcM(trades)};
 }
 
@@ -90,9 +105,9 @@ function calcM(trades){
   };
 }
 
-function sweepLocal(ohlcv,startDate,roundings,offsets,lotSize){
+function sweepLocal(ohlcv,startDate,endDate,roundings,offsets,lotSize){
   const rows=[];
-  roundings.forEach(r=>offsets.forEach(o=>{const{metrics:m}=runEngine(ohlcv,startDate,r,o,lotSize);if(m)rows.push({rounding:r,offset:o,...m});}));
+  roundings.forEach(r=>offsets.forEach(o=>{const{metrics:m}=runEngine(ohlcv,startDate,endDate,r,o,lotSize);if(m)rows.push({rounding:r,offset:o,...m});}));
   return rows.sort((a,b)=>(b.profit_factor==="∞"?999:+b.profit_factor)-(a.profit_factor==="∞"?999:+a.profit_factor));
 }
 
@@ -120,6 +135,7 @@ const fmtPt=n=>(n>=0?"+":"")+n;
 export default function App(){
   const [ticker,setTicker]=useState("^NSEI");
   const [startDate,setStartDate]=useState("2020-01-01");
+  const [endDate,setEndDate]=useState("");
   const [rounding,setRounding]=useState(500);
   const [offset,setOffset]=useState(10);
   const [lotSize,setLotSize]=useState(1);
@@ -137,6 +153,18 @@ export default function App(){
   const [errorMsg,setErrorMsg]=useState("");
   const fileRef=useRef();
 
+  // Saved backtests
+  const LS_KEY='saved_backtests';
+  const getSaved=()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))||[];}catch{return[];}};
+  const putSaved=arr=>localStorage.setItem(LS_KEY,JSON.stringify(arr));
+  const [savedEntries,setSavedEntries]=useState(getSaved);
+  const [showSaveModal,setShowSaveModal]=useState(false);
+  const [saveInstrument,setSaveInstrument]=useState('');
+  const [saveTimePeriod,setSaveTimePeriod]=useState('Daily');
+  const [pendingSave,setPendingSave]=useState(null);
+  const [openGroups,setOpenGroups]=useState({});
+  const [openPeriods,setOpenPeriods]=useState({});
+
   useEffect(()=>{
     fetch(`${SERVER}/health`,{signal:AbortSignal.timeout(2000)})
       .then(r=>r.ok?r.json():Promise.reject())
@@ -148,21 +176,20 @@ export default function App(){
     setLoading(true);setErrorMsg("");
     try{
       if(serverOnline&&!uploadedData){
-        const res=await fetch(`${SERVER}/api/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,rounding,offset,lot_size:lotSize}),signal:AbortSignal.timeout(30000)});
+        const res=await fetch(`${SERVER}/api/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,end:endDate,rounding,offset,lot_size:lotSize}),signal:AbortSignal.timeout(30000)});
         if(!res.ok){const e=await res.json();throw new Error(e.error);}
         const data=await res.json();
         setResult(data);
         setStatusMsg(`${data.trades.length} trades · ${ticker} · R=${rounding} · Offset=${offset} · Live via yfinance`);
       }else if(uploadedData){
-        const res=runEngine(uploadedData,startDate,rounding,offset,lotSize);
+        const res=runEngine(uploadedData,startDate,endDate,rounding,offset,lotSize);
         setResult({trades:res.trades,metrics:res.metrics,params:{ticker:uploadedFileName,rounding,offset}});
         setStatusMsg(`${res.trades.length} trades · Uploaded data · R=${rounding} · Offset=${offset}`);
       }else{
-        setErrorMsg("Server offline. Upload a CSV or JSON file, or run: python server.py");
       }
     }catch(e){setErrorMsg(e.message?.includes("fetch")?"Cannot reach server. Run: python server.py":e.message);}
     setLoading(false);
-  },[serverOnline,uploadedData,ticker,startDate,rounding,offset,lotSize]);
+  },[serverOnline,uploadedData,ticker,startDate,endDate,rounding,offset,lotSize]);
 
   const handleSweep=useCallback(async()=>{
     setLoading(true);setErrorMsg("");
@@ -170,18 +197,49 @@ export default function App(){
     const os=sweepO.split(",").map(Number).filter(Boolean);
     try{
       if(serverOnline&&!uploadedData){
-        const res=await fetch(`${SERVER}/api/sweep`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,roundings:rs,offsets:os,lot_size:lotSize}),signal:AbortSignal.timeout(60000)});
+        const res=await fetch(`${SERVER}/api/sweep`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,end:endDate,roundings:rs,offsets:os,lot_size:lotSize}),signal:AbortSignal.timeout(60000)});
         if(!res.ok)throw new Error("Sweep failed");
         setSweepRows(await res.json());
       }else if(uploadedData){
-        setSweepRows(sweepLocal(uploadedData,startDate,rs,os,lotSize));
+        setSweepRows(sweepLocal(uploadedData,startDate,endDate,rs,os,lotSize));
       }else{
         setErrorMsg("Server offline. Upload data to run sweep locally.");
       }
       setActiveTab("sweep");
     }catch(e){setErrorMsg(e.message);}
     setLoading(false);
-  },[serverOnline,uploadedData,ticker,startDate,sweepR,sweepO,lotSize]);
+  },[serverOnline,uploadedData,ticker,startDate,endDate,sweepR,sweepO,lotSize]);
+
+  // Save from overview
+  const saveFromOverview=()=>{
+    if(!m)return;
+    const data={rounding,offset,start:startDate,end:endDate,trades:m.total_trades,win_rate:m.win_rate,profit_factor:m.profit_factor,total_pnl:m.total_pnl_points,expectancy:m.expectancy_points,max_dd:m.max_drawdown_points,avg_days:m.avg_days_held};
+    setPendingSave(data);
+    setSaveInstrument(uploadedFileName||TICKERS[ticker]||ticker);
+    setSaveTimePeriod('Daily');
+    setShowSaveModal(true);
+  };
+  // Save from sweep
+  const saveFromSweepRow=(r)=>{
+    const data={rounding:r.rounding,offset:r.offset,start:startDate,end:endDate,trades:r.total_trades,win_rate:r.win_rate,profit_factor:r.profit_factor,total_pnl:r.total_pnl_points,expectancy:r.expectancy_points,max_dd:r.max_drawdown_points,avg_days:r.avg_days_held};
+    setPendingSave(data);
+    setSaveInstrument(uploadedFileName||TICKERS[ticker]||ticker);
+    setSaveTimePeriod('Daily');
+    setShowSaveModal(true);
+  };
+  // Confirm save
+  const confirmSave=()=>{
+    if(!saveInstrument.trim()||!pendingSave){setShowSaveModal(false);return;}
+    const entry={id:Date.now(),instrument:saveInstrument.trim(),period:saveTimePeriod,...pendingSave,savedAt:new Date().toLocaleString('en-IN')};
+    const updated=[...savedEntries,entry];
+    putSaved(updated);setSavedEntries(updated);
+    setShowSaveModal(false);setPendingSave(null);
+    setStatusMsg(`★ Saved · ${entry.instrument} · ${entry.period} · R=${entry.rounding} · O=${entry.offset}`);
+  };
+  const deleteSaved=(id)=>{const updated=savedEntries.filter(e=>e.id!==id);putSaved(updated);setSavedEntries(updated);};
+  const clearAllSaved=()=>{if(!window.confirm('Delete all saved backtests?'))return;putSaved([]);setSavedEntries([]);};
+  const toggleGroup=(key)=>setOpenGroups(g=>({...g,[key]:!g[key]}));
+  const togglePeriod=(key)=>setOpenPeriods(p=>({...p,[key]:!p[key]}));
 
   const handleFile=e=>{
     const file=e.target.files[0];if(!file)return;
@@ -263,7 +321,7 @@ export default function App(){
             </select>
           </div>
         )}
-        {[{label:"Start Date",el:<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inputSt}/>},{label:"Rounding",el:<input type="number" value={rounding} onChange={e=>setRounding(+e.target.value)} style={inputSt} step={50} min={10}/>},{label:"Offset",el:<input type="number" value={offset} onChange={e=>setOffset(+e.target.value)} style={inputSt} step={1} min={0}/>},{label:"Lot Size",el:<input type="number" value={lotSize} onChange={e=>setLotSize(+e.target.value)} style={inputSt} step={1} min={1}/>}].map(({label,el})=>(
+        {[{label:"Start Date",el:<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inputSt}/>},{label:"End Date",el:<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inputSt}/>},{label:"Rounding",el:<input type="number" value={rounding} onChange={e=>setRounding(+e.target.value)} style={inputSt} step={50} min={10}/>},{label:"Offset",el:<input type="number" value={offset} onChange={e=>setOffset(+e.target.value)} style={inputSt} step={1} min={0}/>},{label:"Lot Size",el:<input type="number" value={lotSize} onChange={e=>setLotSize(+e.target.value)} style={inputSt} step={1} min={1}/>}].map(({label,el})=>(
           <div key={label}><div style={{fontSize:10,color:T.muted,fontFamily:T.mono,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:4}}>{label}</div>{el}</div>
         ))}
         <div style={{alignSelf:"flex-end",display:"flex",gap:8}}>
@@ -275,7 +333,7 @@ export default function App(){
 
       {/* Tabs */}
       <div style={{background:T.surf,borderBottom:`1px solid ${T.border}`,padding:"0 24px",display:"flex"}}>
-        {["overview","trades","sweep"].map(tab=>(
+        {["overview","trades","sweep","saved"].map(tab=>(
           <button key={tab} onClick={()=>setActiveTab(tab)} style={{background:"none",border:"none",padding:"11px 20px",color:activeTab===tab?T.accent:T.muted,fontSize:12,fontFamily:T.mono,cursor:"pointer",borderBottom:activeTab===tab?`2px solid ${T.accent}`:"2px solid transparent",textTransform:"capitalize",fontWeight:activeTab===tab?700:400}}>{tab}</button>
         ))}
       </div>
@@ -324,6 +382,10 @@ export default function App(){
                 <ResponsiveContainer width="100%" height={160}><BarChart data={daysData}><CartesianGrid strokeDasharray="3 3" stroke={T.border}/><XAxis dataKey="label" tick={{fill:T.muted,fontSize:9,fontFamily:T.mono}}/><YAxis tick={{fill:T.muted,fontSize:9,fontFamily:T.mono}}/><Tooltip content={<TTip/>}/><Bar dataKey="count" fill={`${T.accent}bb`} name="Trades"/></BarChart></ResponsiveContainer>
               </div>
             </div>
+            {/* Save button */}
+            <div style={{textAlign:'right',marginTop:14}}>
+              <button onClick={saveFromOverview} style={btnOutline}>★ Save This Result</button>
+            </div>
           </>
         )}
 
@@ -371,9 +433,10 @@ export default function App(){
             </div>
             {sweepRows.length>0&&(
               <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr>{["Rounding","Offset","Trades","Win Rate","Profit Factor","Total P&L pts","Expectancy","Max DD","Avg Days"].map(h=><th key={h} style={thSt}>{h}</th>)}</tr></thead>
+                <thead><tr><th style={thSt}></th>{["Rounding","Offset","Trades","Win Rate","Profit Factor","Total P&L pts","Expectancy","Max DD","Avg Days"].map(h=><th key={h} style={thSt}>{h}</th>)}</tr></thead>
                 <tbody>{sweepRows.map((r,i)=>{const pfNum=r.profit_factor==="∞"?999:+r.profit_factor,pfColor=pfNum>=1.5?T.teal:pfNum>=1?T.accent:T.red;return(
                   <tr key={`${r.rounding}-${r.offset}`} style={{borderBottom:`1px solid ${T.border}22`,background:i===0?`${T.accent}08`:"transparent"}}>
+                    <td style={tdSt}><button onClick={()=>saveFromSweepRow(r)} style={{background:'none',border:'none',color:T.muted,fontSize:15,cursor:'pointer',padding:'2px 6px'}} title="Save">☆</button></td>
                     <td style={tdSt}>{r.rounding}</td><td style={tdSt}>{r.offset}</td><td style={tdSt}>{r.total_trades}</td>
                     <td style={{...tdSt,color:r.win_rate>=50?T.teal:T.red}}>{r.win_rate}%</td>
                     <td style={{...tdSt,color:pfColor,fontWeight:700}}>{r.profit_factor}</td>
@@ -387,6 +450,71 @@ export default function App(){
             )}
           </div>
         )}
+
+        {/* SAVED */}
+        {activeTab==="saved"&&!loading&&(
+          <div>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+              <SecTitle>Saved Backtests</SecTitle>
+              <button onClick={clearAllSaved} style={{background:'rgba(248,113,113,0.1)',color:T.red,border:'1px solid rgba(248,113,113,0.3)',padding:'5px 12px',borderRadius:6,fontFamily:T.mono,fontSize:11,cursor:'pointer'}}>🗑 Clear All</button>
+            </div>
+            {savedEntries.length===0&&(
+              <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:280,color:T.muted,fontFamily:T.mono,fontSize:13,gap:10}}>
+                <div>No saved backtests yet</div>
+                <div style={{fontSize:11,color:T.muted}}>Run a backtest then click ★ Save on Overview or Sweep rows</div>
+              </div>
+            )}
+            {(()=>{
+              const groups={};
+              savedEntries.forEach(e=>{
+                if(!groups[e.instrument])groups[e.instrument]={};
+                if(!groups[e.instrument][e.period])groups[e.instrument][e.period]=[];
+                groups[e.instrument][e.period].push(e);
+              });
+              return Object.entries(groups).map(([inst,periods])=>{
+                const total=Object.values(periods).reduce((s,a)=>s+a.length,0);
+                const isOpen=openGroups[inst]!==false;
+                return(<div key={inst} style={{marginBottom:10,border:`1px solid ${T.border}`,borderRadius:10,overflow:'hidden',background:T.surf}}>
+                  <div onClick={()=>toggleGroup(inst)} style={{padding:'12px 18px',cursor:'pointer',display:'flex',alignItems:'center',gap:10,fontFamily:T.mono,fontSize:13,fontWeight:700,color:T.accent,userSelect:'none'}}>
+                    <span style={{fontSize:10,color:T.muted,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'rotate(0deg)',display:'inline-block'}}>▶</span>
+                    {inst} <span style={{fontWeight:400,fontSize:11,color:T.muted2,marginLeft:6}}>({total})</span>
+                  </div>
+                  {isOpen&&<div style={{padding:'0 12px 8px 12px'}}>
+                    {Object.entries(periods).map(([period,entries])=>{
+                      const pk=`${inst}__${period}`;
+                      const pOpen=openPeriods[pk]!==false;
+                      return(<div key={pk} style={{border:`1px solid ${T.border}`,borderRadius:8,overflow:'hidden',marginBottom:8}}>
+                        <div onClick={()=>togglePeriod(pk)} style={{padding:'8px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,fontFamily:T.mono,fontSize:11,fontWeight:600,color:T.muted2,background:T.surf2,userSelect:'none'}}>
+                          <span style={{fontSize:10,color:T.muted,transition:'transform 0.2s',transform:pOpen?'rotate(90deg)':'rotate(0deg)',display:'inline-block'}}>▶</span>
+                          {period} <span style={{fontWeight:400,fontSize:10,color:T.muted,marginLeft:4}}>({entries.length})</span>
+                        </div>
+                        {pOpen&&<div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse'}}>
+                          <thead><tr>{['Rounding','Offset','Start','End','Trades','Win Rate','PF','Total P&L','Expectancy','Max DD','Avg Days',''].map(h=><th key={h} style={thSt}>{h}</th>)}</tr></thead>
+                          <tbody>{entries.map(e=>{
+                            const pfNum=e.profit_factor===Infinity?999:+e.profit_factor;
+                            const pfColor=pfNum>=1.5?T.teal:pfNum>=1?T.accent:T.red;
+                            return(<tr key={e.id} style={{borderBottom:`1px solid ${T.border}22`}}>
+                              <td style={tdSt}>{e.rounding}</td><td style={tdSt}>{e.offset}</td>
+                              <td style={tdSt}>{e.start||'-'}</td><td style={tdSt}>{e.end||'-'}</td>
+                              <td style={tdSt}>{e.trades}</td>
+                              <td style={{...tdSt,color:e.win_rate>=50?T.teal:T.red}}>{e.win_rate}%</td>
+                              <td style={{...tdSt,color:pfColor,fontWeight:700}}>{e.profit_factor}</td>
+                              <td style={{...tdSt,color:e.total_pnl>=0?T.teal:T.red}}>{fmtN(e.total_pnl)}</td>
+                              <td style={{...tdSt,color:e.expectancy>=0?T.teal:T.red}}>{fmtPt(e.expectancy)}</td>
+                              <td style={{...tdSt,color:T.red}}>{fmtN(e.max_dd)}</td>
+                              <td style={tdSt}>{e.avg_days}d</td>
+                              <td style={tdSt}><button onClick={()=>deleteSaved(e.id)} style={{background:'rgba(248,113,113,0.1)',color:T.red,border:'1px solid rgba(248,113,113,0.3)',padding:'2px 8px',borderRadius:4,fontFamily:T.mono,fontSize:10,cursor:'pointer'}}>🗑</button></td>
+                            </tr>);
+                          })}</tbody>
+                        </table></div>}
+                      </div>);
+                    })}
+                  </div>}
+                </div>);
+              });
+            })()}
+          </div>
+        )}
       </div>
 
       {/* Status */}
@@ -395,6 +523,27 @@ export default function App(){
         <span>{statusMsg}</span>
         <span style={{marginLeft:"auto"}}>Turtlewealth Research · Growth Mantra PMS · SEBI INP000006758</span>
       </div>
+
+      {/* Save Modal Overlay */}
+      {showSaveModal&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.65)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowSaveModal(false)}>
+          <div style={{background:T.surf2,border:`1px solid ${T.border2}`,borderRadius:14,padding:'28px 32px',width:380,maxWidth:'92vw'}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:18,color:T.accent,fontFamily:T.sans}}>★ Save Backtest</div>
+            <div style={{fontSize:10,color:T.muted,fontFamily:T.mono,textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:4}}>Instrument Name</div>
+            <input value={saveInstrument} onChange={e=>setSaveInstrument(e.target.value)} placeholder="e.g. Nifty, BankNifty, Gold…" style={{width:'100%',background:T.bg,border:`1px solid ${T.border}`,color:T.text,padding:'9px 12px',borderRadius:7,fontFamily:T.mono,fontSize:12,outline:'none',marginBottom:14,boxSizing:'border-box'}}/>
+            <div style={{fontSize:10,color:T.muted,fontFamily:T.mono,textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:4}}>Time Period</div>
+            <select value={saveTimePeriod} onChange={e=>setSaveTimePeriod(e.target.value)} style={{width:'100%',background:T.bg,border:`1px solid ${T.border}`,color:T.text,padding:'9px 12px',borderRadius:7,fontFamily:T.mono,fontSize:12,outline:'none',marginBottom:18,boxSizing:'border-box'}}>
+              <option value="Daily">Daily</option>
+              <option value="Weekly">Weekly</option>
+              <option value="Monthly">Monthly</option>
+            </select>
+            <div style={{display:'flex',gap:10,justifyContent:'flex-end'}}>
+              <button onClick={()=>setShowSaveModal(false)} style={{padding:'8px 20px',borderRadius:7,fontFamily:T.sans,fontWeight:700,fontSize:12,cursor:'pointer',background:'transparent',color:T.muted2,border:`1px solid ${T.border}`}}>Cancel</button>
+              <button onClick={confirmSave} style={{padding:'8px 20px',borderRadius:7,fontFamily:T.sans,fontWeight:700,fontSize:12,cursor:'pointer',background:T.accent,color:T.bg,border:'none'}}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

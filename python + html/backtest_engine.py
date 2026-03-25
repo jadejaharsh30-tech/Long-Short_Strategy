@@ -73,12 +73,16 @@ def load_file(filepath: str) -> pd.DataFrame:
 # Core engine
 # ─────────────────────────────────────────────
 
-def run_backtest(df: pd.DataFrame, start_date: str, rounding: int,
+def run_backtest(df: pd.DataFrame, start_date: str, end_date: str, rounding: int,
                  offset: float, instrument_name: str = 'Instrument',
                  lot_size: int = 1) -> dict:
 
     start_dt = pd.to_datetime(start_date)
-    df = df[df.index >= start_dt].copy()
+    if end_date:
+        end_dt = pd.to_datetime(end_date)
+        df = df[(df.index >= start_dt) & (df.index <= end_dt)].copy()
+    else:
+        df = df[df.index >= start_dt].copy()
     if df.empty:
         raise ValueError(f"No data from {start_date} onwards.")
 
@@ -215,10 +219,31 @@ def run_backtest(df: pd.DataFrame, start_date: str, rounding: int,
         day_log['flipped_today'] = flipped_today
         daily_log.append(day_log)
 
+    # Force close any open position at the end date's close price (Mark to Market)
+    if state != 'FLAT' and len(df) > 0:
+        dt = df.index[-1]
+        c = round(float(df.iloc[-1]['close']), 2)
+        if state == 'LONG':
+            pnl_pts = c - entry_price
+        else:
+            pnl_pts = entry_price - c
+        pnl = pnl_pts * position_units * lot_size
+        trades.append({
+            'trade_id': trade_id, 'direction': state,
+            'entry_date': entry_date.strftime('%Y-%m-%d'),
+            'entry_price': entry_price,
+            'exit_date': dt.strftime('%Y-%m-%d') + ' (End)',
+            'exit_price': c,
+            'units': position_units,
+            'pnl_points': round(pnl_pts, 2),
+            'pnl': round(pnl, 2),
+            'days_held': max((dt - entry_date).days, 0),
+        })
+
     return {
         'instrument': instrument_name,
         'params': {
-            'ticker': instrument_name, 'start_date': start_date,
+            'ticker': instrument_name, 'start_date': start_date, 'end_date': end_date,
             'rounding': rounding, 'offset': offset,
             'lot_size': lot_size, 'total_days': len(df),
         },
@@ -286,13 +311,13 @@ def compute_metrics(trades: list) -> dict:
 # Parameter sweep
 # ─────────────────────────────────────────────
 
-def parameter_sweep(df, start_date, rounding_range, offset_range,
+def parameter_sweep(df, start_date, end_date, rounding_range, offset_range,
                     instrument_name='Instrument') -> pd.DataFrame:
     results = []
     for r in rounding_range:
         for o in offset_range:
             try:
-                bt = run_backtest(df, start_date, r, o, instrument_name)
+                bt = run_backtest(df, start_date, end_date, r, o, instrument_name)
                 m  = bt['metrics']
                 if 'error' not in m:
                     results.append({
@@ -349,8 +374,8 @@ if __name__ == '__main__':
         df   = load_yfinance(args.ticker, args.start)
         name = args.ticker
 
-    print(f"\n  Params: R={args.rounding} | Offset={args.offset} | Start={args.start} | Lot={args.lotsize}\n")
-    result = run_backtest(df, args.start, args.rounding, args.offset, name, args.lotsize)
+    print(f"\n  Params: R={args.rounding} | Offset={args.offset} | Start={args.start} | End={args.end} | Lot={args.lotsize}\n")
+    result = run_backtest(df, args.start, args.end, args.rounding, args.offset, name, args.lotsize)
     m = result['metrics']
 
     if 'error' in m:
@@ -370,7 +395,7 @@ if __name__ == '__main__':
 
     if args.sweep:
         print("\n  Running parameter sweep (R=[250,500,750,1000] x Offset=[5,10,15,20])...")
-        sweep = parameter_sweep(df, args.start,
+        sweep = parameter_sweep(df, args.start, args.end,
                                 rounding_range=[250, 500, 750, 1000],
                                 offset_range=[5, 10, 15, 20],
                                 instrument_name=name)
