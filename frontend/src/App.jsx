@@ -32,13 +32,15 @@ const thSt={padding:"9px 13px",textAlign:"left",color:T.muted,fontWeight:400,tex
 const flr=(p,r)=>Math.floor(p/r)*r, cl=(p,r)=>Math.ceil(p/r)*r;
 const dB=(d1,d2)=>Math.round((new Date(d2)-new Date(d1))/86400000);
 
-function runEngine(ohlcv,startDate,rounding,offset,lotSize=1){
+function runEngine(ohlcv,startDate,endDate,rounding,offset,lotSize=1){
   const start=new Date(startDate).getTime();
-  const data=ohlcv.filter(r=>new Date(r.date).getTime()>=start);
+  const end=new Date(endDate).getTime();
+  const data=ohlcv.filter(r=>{const t=new Date(r.date).getTime();return t>=start&&t<=end;});
   if(!data.length) return {trades:[],metrics:null};
   const trades=[];
-  let state="FLAT",posUnits=0,entryPrice=null,entryDate=null;
+  let state="FLAT",posUnits=0,entryPrice=null,entryDate=null,cumPnL=0;
   let activeLevel=null,anchorFloor=null,anchorCeil=null,anchorDone=false,tradeId=0;
+  const dailyPnL=[];
   for(const {date,open,high,low,close} of data){
     const o=open||close; // fallback if open missing
     if(!anchorDone){anchorFloor=flr(close,rounding);anchorCeil=cl(close,rounding);if(anchorCeil===anchorFloor)anchorCeil+=rounding;anchorDone=true;continue;}
@@ -52,18 +54,19 @@ function runEngine(ohlcv,startDate,rounding,offset,lotSize=1){
       else if(hitDown){state="SHORT";posUnits=1;entryPrice=Math.min(o,dT);entryDate=date;tradeId++;activeLevel=cl(high,rounding);}
     }else if(state==="LONG"){
       const snap=activeLevel,dT=snap-offset;
-      if(low<=dT){const ep=Math.min(o,dT),pnl=(ep-entryPrice)*posUnits*lotSize;trades.push({trade_id:tradeId,direction:"LONG",entry_date:entryDate,entry_price:entryPrice,exit_date:date,exit_price:ep,units:posUnits,pnl_points:+(ep-entryPrice).toFixed(2),pnl:+pnl.toFixed(2),days_held:dB(entryDate,date)});flippedToday=true;state="SHORT";posUnits=1;entryPrice=ep;entryDate=date;tradeId++;activeLevel=cl(high,rounding);}
+      if(low<=dT){const ep=Math.min(o,dT),pnl=(ep-entryPrice)*posUnits*lotSize;trades.push({trade_id:tradeId,direction:"LONG",entry_date:entryDate,entry_price:entryPrice,exit_date:date,exit_price:ep,units:posUnits,pnl_points:+(ep-entryPrice).toFixed(2),pnl:+pnl.toFixed(2),days_held:dB(entryDate,date)});flippedToday=true;state="SHORT";posUnits=1;entryPrice=ep;entryDate=date;tradeId++;activeLevel=cl(high,rounding);cumPnL+=pnl;}
       else{const nf=flr(low,rounding);if(nf>activeLevel)activeLevel=nf;}
     }else if(state==="SHORT"){
       const snap=activeLevel,uT=snap+offset;
-      if(high>=uT){const ep=Math.max(o,uT),pnl=(entryPrice-ep)*posUnits*lotSize;trades.push({trade_id:tradeId,direction:"SHORT",entry_date:entryDate,entry_price:entryPrice,exit_date:date,exit_price:ep,units:posUnits,pnl_points:+(entryPrice-ep).toFixed(2),pnl:+pnl.toFixed(2),days_held:dB(entryDate,date)});flippedToday=true;state="LONG";posUnits=1;entryPrice=ep;entryDate=date;tradeId++;activeLevel=flr(low,rounding);}
+      if(high>=uT){const ep=Math.max(o,uT),pnl=(entryPrice-ep)*posUnits*lotSize;trades.push({trade_id:tradeId,direction:"SHORT",entry_date:entryDate,entry_price:entryPrice,exit_date:date,exit_price:ep,units:posUnits,pnl_points:+(entryPrice-ep).toFixed(2),pnl:+pnl.toFixed(2),days_held:dB(entryDate,date)});flippedToday=true;state="LONG";posUnits=1;entryPrice=ep;entryDate=date;tradeId++;activeLevel=flr(low,rounding);cumPnL+=pnl;}
       else{const nc=cl(high,rounding);if(nc<activeLevel)activeLevel=nc;}
     }
+    dailyPnL.push(cumPnL);
   }
-  return{trades,metrics:calcM(trades)};
+  return{trades,metrics:calcM(trades,dailyPnL)};
 }
 
-function calcM(trades){
+function calcM(trades,dailyPnL=[]){
   if(!trades.length)return null;
   const win=trades.filter(t=>t.pnl_points>0),los=trades.filter(t=>t.pnl_points<=0);
   const lng=trades.filter(t=>t.direction==="LONG"),sht=trades.filter(t=>t.direction==="SHORT");
@@ -87,12 +90,33 @@ function calcM(trades){
     long_win_rate:lng.length?+(lng.filter(t=>t.pnl_points>0).length/lng.length*100).toFixed(1):0,
     short_win_rate:sht.length?+(sht.filter(t=>t.pnl_points>0).length/sht.length*100).toFixed(1):0,
     long_pnl:+s(lng,"pnl").toFixed(0),short_pnl:+s(sht,"pnl").toFixed(0),
+    ...calculateDdDurations(dailyPnL)
   };
 }
 
-function sweepLocal(ohlcv,startDate,roundings,offsets,lotSize){
+function calculateDdDurations(series) {
+  if(!series || !series.length) return { max_drawdown_duration: 0, avg_drawdown_duration: 0 };
+  let peak = 0, dds = [], cur = 0;
+  series.forEach(v => {
+    const val = Number(v) || 0;
+    if (val >= peak) {
+      if (cur > 0) dds.push(cur);
+      peak = val;
+      cur = 0;
+    } else {
+      cur++;
+    }
+  });
+  if (cur > 0) dds.push(cur);
+  return {
+    max_drawdown_duration: dds.length ? Math.max(...dds) : 0,
+    avg_drawdown_duration: dds.length ? +(dds.reduce((a, b) => a + b, 0) / dds.length).toFixed(1) : 0
+  };
+}
+
+function sweepLocal(ohlcv,startDate,endDate,roundings,offsets,lotSize){
   const rows=[];
-  roundings.forEach(r=>offsets.forEach(o=>{const{metrics:m}=runEngine(ohlcv,startDate,r,o,lotSize);if(m)rows.push({rounding:r,offset:o,...m});}));
+  roundings.forEach(r=>offsets.forEach(o=>{const{metrics:m}=runEngine(ohlcv,startDate,endDate,r,o,lotSize);if(m)rows.push({rounding:r,offset:o,...m});}));
   return rows.sort((a,b)=>(b.profit_factor==="∞"?999:+b.profit_factor)-(a.profit_factor==="∞"?999:+a.profit_factor));
 }
 
@@ -120,6 +144,7 @@ const fmtPt=n=>(n>=0?"+":"")+n;
 export default function App(){
   const [ticker,setTicker]=useState("^NSEI");
   const [startDate,setStartDate]=useState("2020-01-01");
+  const [endDate,setEndDate]=useState(new Date().toISOString().split("T")[0]);
   const [rounding,setRounding]=useState(500);
   const [offset,setOffset]=useState(10);
   const [lotSize,setLotSize]=useState(1);
@@ -134,6 +159,7 @@ export default function App(){
   const [statusMsg,setStatusMsg]=useState("Checking server…");
   const [uploadedData,setUploadedData]=useState(null);
   const [uploadedFileName,setUploadedFileName]=useState(null);
+  const [saved,setSaved]=useState([]);
   const [errorMsg,setErrorMsg]=useState("");
   const fileRef=useRef();
 
@@ -148,21 +174,21 @@ export default function App(){
     setLoading(true);setErrorMsg("");
     try{
       if(serverOnline&&!uploadedData){
-        const res=await fetch(`${SERVER}/api/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,rounding,offset,lot_size:lotSize}),signal:AbortSignal.timeout(30000)});
+        const res=await fetch(`${SERVER}/api/backtest`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,end:endDate,rounding,offset,lot_size:lotSize}),signal:AbortSignal.timeout(30000)});
         if(!res.ok){const e=await res.json();throw new Error(e.error);}
         const data=await res.json();
         setResult(data);
         setStatusMsg(`${data.trades.length} trades · ${ticker} · R=${rounding} · Offset=${offset} · Live via yfinance`);
       }else if(uploadedData){
-        const res=runEngine(uploadedData,startDate,rounding,offset,lotSize);
+        const res=runEngine(uploadedData,startDate,endDate,rounding,offset,lotSize);
         setResult({trades:res.trades,metrics:res.metrics,params:{ticker:uploadedFileName,rounding,offset}});
-        setStatusMsg(`${res.trades.length} trades · Uploaded data · R=${rounding} · Offset=${offset}`);
+        setStatusMsg(`${res.trades.length} trades · ${uploadedFileName||"Uploaded data"} · R=${rounding} · Offset=${offset}`);
       }else{
         setErrorMsg("Server offline. Upload a CSV or JSON file, or run: python server.py");
       }
     }catch(e){setErrorMsg(e.message?.includes("fetch")?"Cannot reach server. Run: python server.py":e.message);}
     setLoading(false);
-  },[serverOnline,uploadedData,ticker,startDate,rounding,offset,lotSize]);
+  },[serverOnline,uploadedData,uploadedFileName,ticker,startDate,endDate,rounding,offset,lotSize]);
 
   const handleSweep=useCallback(async()=>{
     setLoading(true);setErrorMsg("");
@@ -170,18 +196,18 @@ export default function App(){
     const os=sweepO.split(",").map(Number).filter(Boolean);
     try{
       if(serverOnline&&!uploadedData){
-        const res=await fetch(`${SERVER}/api/sweep`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,roundings:rs,offsets:os,lot_size:lotSize}),signal:AbortSignal.timeout(60000)});
+        const res=await fetch(`${SERVER}/api/sweep`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,start:startDate,end:endDate,roundings:rs,offsets:os,lot_size:lotSize}),signal:AbortSignal.timeout(60000)});
         if(!res.ok)throw new Error("Sweep failed");
         setSweepRows(await res.json());
       }else if(uploadedData){
-        setSweepRows(sweepLocal(uploadedData,startDate,rs,os,lotSize));
+        setSweepRows(sweepLocal(uploadedData,startDate,endDate,rs,os,lotSize));
       }else{
         setErrorMsg("Server offline. Upload data to run sweep locally.");
       }
       setActiveTab("sweep");
     }catch(e){setErrorMsg(e.message);}
     setLoading(false);
-  },[serverOnline,uploadedData,ticker,startDate,sweepR,sweepO,lotSize]);
+  },[serverOnline,uploadedData,ticker,startDate,endDate,sweepR,sweepO,lotSize]);
 
   const handleFile=e=>{
     const file=e.target.files[0];if(!file)return;
@@ -220,7 +246,26 @@ export default function App(){
 
   const trades=result?.trades||[];
   const m=result?.metrics;
-
+  const handleSave=(m)=>{
+    if(!m)return;
+    const item={
+      id:Date.now(),
+      ticker:result?.params?.ticker||ticker,
+      period:`${startDate} to ${endDate}`,
+      rounding:m.rounding||rounding,
+      offset:m.offset||offset,
+      trades:m.total_trades||m.trades,
+      win_rate:m.win_rate,
+      profit_factor:m.profit_factor,
+      pnl:m.total_pnl_points,
+      expectancy:m.expectancy_points||m.expectancy,
+      max_dd:m.max_drawdown_points||m.max_dd,
+      max_dd_dur: m.max_drawdown_duration || 0,
+      avg_days:m.avg_days_held||m.avg_days
+    };
+    setSaved(s=>[item,...s]);
+    setStatusMsg("Backtest Saved to comparison tab!");
+  };
   const pnlData=useMemo(()=>{let cum=0;return trades.map(t=>({date:(t.exit_date||"").slice(5),cum:+(cum+=t.pnl_points).toFixed(0)}));},[trades]);
   const distData=useMemo(()=>{if(!trades.length)return[];const pts=trades.map(t=>t.pnl_points);const mn=Math.min(...pts),mx=Math.max(...pts),bins=18,step=(mx-mn)/bins||1;return Array.from({length:bins},(_,i)=>{const lo=mn+i*step;return{label:Math.round(lo),count:pts.filter(p=>p>=lo&&p<lo+step).length,pos:lo>=0};});},[trades]);
   const daysData=useMemo(()=>{if(!trades.length)return[];const days=trades.map(t=>t.days_held);const mx=Math.max(...days)||1,bins=Math.min(12,mx+1),step=Math.ceil((mx+1)/bins);return Array.from({length:bins},(_,i)=>({label:`${i*step}d`,count:days.filter(d=>d>=i*step&&d<(i+1)*step).length}));},[trades]);
@@ -263,19 +308,20 @@ export default function App(){
             </select>
           </div>
         )}
-        {[{label:"Start Date",el:<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inputSt}/>},{label:"Rounding",el:<input type="number" value={rounding} onChange={e=>setRounding(+e.target.value)} style={inputSt} step={50} min={10}/>},{label:"Offset",el:<input type="number" value={offset} onChange={e=>setOffset(+e.target.value)} style={inputSt} step={1} min={0}/>},{label:"Lot Size",el:<input type="number" value={lotSize} onChange={e=>setLotSize(+e.target.value)} style={inputSt} step={1} min={1}/>}].map(({label,el})=>(
+        {[{label:"Start Date",el:<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={inputSt}/>},{label:"End Date",el:<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={inputSt}/>},{label:"Rounding",el:<input type="number" value={rounding} onChange={e=>setRounding(+e.target.value)} style={inputSt} step={50} min={10}/>},{label:"Offset",el:<input type="number" value={offset} onChange={e=>setOffset(+e.target.value)} style={inputSt} step={1} min={0}/>},{label:"Lot Size",el:<input type="number" value={lotSize} onChange={e=>setLotSize(+e.target.value)} style={inputSt} step={1} min={1}/>}].map(({label,el})=>(
           <div key={label}><div style={{fontSize:10,color:T.muted,fontFamily:T.mono,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:4}}>{label}</div>{el}</div>
         ))}
         <div style={{alignSelf:"flex-end",display:"flex",gap:8}}>
           <button onClick={()=>fileRef.current.click()} style={btnOutline}>↑ CSV / JSON / Excel</button>
           <input ref={fileRef} type="file" accept=".csv,.json,.xlsx,.xls" style={{display:"none"}} onChange={handleFile}/>
           <button onClick={handleRun} style={{...btnPrimary,opacity:loading?0.6:1}} disabled={loading}>{loading?"Loading…":"▶ Run"}</button>
+          {!loading && result && activeTab==="overview" && <button onClick={()=>handleSave(m)} style={{...btnOutline,color:T.accent}}>Save Result</button>}
         </div>
       </div>
 
       {/* Tabs */}
       <div style={{background:T.surf,borderBottom:`1px solid ${T.border}`,padding:"0 24px",display:"flex"}}>
-        {["overview","trades","sweep"].map(tab=>(
+        {["overview","trades","sweep","saved"].map(tab=>(
           <button key={tab} onClick={()=>setActiveTab(tab)} style={{background:"none",border:"none",padding:"11px 20px",color:activeTab===tab?T.accent:T.muted,fontSize:12,fontFamily:T.mono,cursor:"pointer",borderBottom:activeTab===tab?`2px solid ${T.accent}`:"2px solid transparent",textTransform:"capitalize",fontWeight:activeTab===tab?700:400}}>{tab}</button>
         ))}
       </div>
@@ -301,6 +347,8 @@ export default function App(){
               <StatCard label="Best Trade" value={"+"+m.max_win_points+" pts"} variant="pos"/>
               <StatCard label="Worst Trade" value={m.max_loss_points+" pts"} variant="neg"/>
               <StatCard label="Avg Hold" value={m.avg_days_held+"d"} variant="gold"/>
+              <StatCard label="Max DD Duration" value={m.max_drawdown_duration+"d"} sub="longest" variant="neg"/>
+              <StatCard label="Avg DD Duration" value={m.avg_drawdown_duration+"d"} sub="recovery" variant="neg"/>
               <StatCard label="Consec W/L" value={`${m.max_consec_wins} / ${m.max_consec_losses}`} sub="wins / losses" variant=""/>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:14,marginBottom:14}}>
@@ -371,7 +419,11 @@ export default function App(){
             </div>
             {sweepRows.length>0&&(
               <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr>{["Rounding","Offset","Trades","Win Rate","Profit Factor","Total P&L pts","Expectancy","Max DD","Avg Days"].map(h=><th key={h} style={thSt}>{h}</th>)}</tr></thead>
+                <thead><tr>
+                    {["Rounding","Offset","Trades","Win Rate","Profit Factor","Total P&L pts","Expectancy","Max DD","DD Dur"].map(h=><th key={h} style={thSt}>{h}</th>)}
+                    <th style={thSt}>Action</th>
+                  </tr>
+                </thead>
                 <tbody>{sweepRows.map((r,i)=>{const pfNum=r.profit_factor==="∞"?999:+r.profit_factor,pfColor=pfNum>=1.5?T.teal:pfNum>=1?T.accent:T.red;return(
                   <tr key={`${r.rounding}-${r.offset}`} style={{borderBottom:`1px solid ${T.border}22`,background:i===0?`${T.accent}08`:"transparent"}}>
                     <td style={tdSt}>{r.rounding}</td><td style={tdSt}>{r.offset}</td><td style={tdSt}>{r.total_trades}</td>
@@ -380,11 +432,45 @@ export default function App(){
                     <td style={{...tdSt,color:r.total_pnl_points>=0?T.teal:T.red}}>{fmtN(r.total_pnl_points)}</td>
                     <td style={{...tdSt,color:r.expectancy_points>=0?T.teal:T.red}}>{fmtPt(r.expectancy_points)}</td>
                     <td style={{...tdSt,color:T.red}}>{fmtN(r.max_drawdown_points)}</td>
-                    <td style={tdSt}>{r.avg_days_held}d</td>
+                    <td style={tdSt}>{r.max_drawdown_duration}d</td>
+                    <td style={tdSt}>
+                      <button onClick={()=>handleSave(r)} style={{background:"none",border:"none",color:T.accent,cursor:"pointer",fontSize:10,textTransform:"uppercase",fontWeight:700,letterSpacing:0.5}}>Save</button>
+                    </td>
                   </tr>);})}
                 </tbody>
               </table></div>
             )}
+          </div>
+        )}
+
+        {/* SAVED */}
+        {activeTab==="saved" && (
+          <div style={cardSt}><SecTitle>Saved Comparisons — {saved.length} runs</SecTitle>
+            <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                {["Instrument","Period","R","O","Tr","Win%","PF","P&L","Exp","MaxDD","DD Dur","AvgD",""].map(h=><th key={h} style={thSt}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {saved.map(r=>(
+                  <tr key={r.id} style={{borderBottom:`1px solid ${T.border}22`}}>
+                    <td style={{...tdSt,color:T.accent}}>{r.ticker}</td>
+                    <td style={{...tdSt,fontSize:10,color:T.muted2}}>{r.period}</td>
+                    <td style={tdSt}>{r.rounding}</td><td style={tdSt}>{r.offset}</td>
+                    <td style={tdSt}>{r.trades}</td>
+                    <td style={{...tdSt,color:r.win_rate>=50?T.teal:T.red}}>{r.win_rate}%</td>
+                    <td style={{...tdSt,color:r.profit_factor>=1?T.teal:T.red,fontWeight:700}}>{r.profit_factor}</td>
+                    <td style={{...tdSt,color:r.pnl>=0?T.teal:T.red}}>{fmtN(r.pnl)}</td>
+                    <td style={tdSt}>{fmtPt(r.expectancy)}</td>
+                    <td style={{...tdSt,color:T.red}}>{fmtN(r.max_dd)}</td>
+                    <td style={{...tdSt,color:T.red}}>{r.max_dd_dur}d</td>
+                    <td style={tdSt}>{r.avg_days}</td>
+                    <td style={tdSt}><button onClick={()=>setSaved(s=>s.filter(x=>x.id!==r.id))} style={{background:"none",border:"none",color:T.red,cursor:"pointer",fontSize:16}}>&times;</button></td>
+                  </tr>
+                ))}
+                {!saved.length && <tr><td colSpan={13} style={{padding:40,textAlign:"center",color:T.muted2,fontFamily:T.mono}}>No saved backtests yet. Run a backtest then click "Save Result".</td></tr>}
+              </tbody>
+            </table></div>
+            {saved.length > 0 && <button onClick={()=>setSaved([])} style={{...btnOutline,color:T.red,borderColor:`${T.red}44`,marginTop:15,fontSize:10}}>Clear All Saved</button>}
           </div>
         )}
       </div>
