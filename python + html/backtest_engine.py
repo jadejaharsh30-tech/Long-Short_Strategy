@@ -77,6 +77,9 @@ def run_backtest(df: pd.DataFrame, start_date: str, end_date: str, rounding: int
                  offset: float, instrument_name: str = 'Instrument',
                  lot_size: int = 1) -> dict:
 
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
     start_dt = pd.to_datetime(start_date)
     if end_date:
         end_dt = pd.to_datetime(end_date)
@@ -281,6 +284,42 @@ def compute_metrics(trades: list) -> dict:
             m = max(m, c)
         return m
 
+    # Calculate Drawdown Durations (in days)
+    drawdown_durations = []
+    current_peak_val = 0
+    current_peak_date = None
+    
+    cum_pnl = 0
+    for _, t in tdf.iterrows():
+        cum_pnl += t['pnl']
+        try:
+            exit_dt = pd.to_datetime(t['exit_date'])
+        except Exception:
+            exit_dt = None
+            
+        if exit_dt:
+            if current_peak_date is None:
+                current_peak_date = exit_dt
+                current_peak_val = cum_pnl
+            elif cum_pnl >= current_peak_val:
+                dur = (exit_dt - current_peak_date).days
+                if dur > 0:
+                    drawdown_durations.append(dur)
+                current_peak_val = cum_pnl
+                current_peak_date = exit_dt
+                
+    if current_peak_date is not None and cum_pnl < current_peak_val:
+        try:
+            last_dt = pd.to_datetime(tdf.iloc[-1]['exit_date'])
+            dur = (last_dt - current_peak_date).days
+            if dur > 0:
+                drawdown_durations.append(dur)
+        except Exception:
+            pass
+
+    max_dd_dur = max(drawdown_durations) if drawdown_durations else 0
+    avg_dd_dur = round(sum(drawdown_durations) / len(drawdown_durations)) if drawdown_durations else 0
+
     wins = (tdf['pnl_points'] > 0).tolist()
     return {
         'total_trades':        len(tdf),
@@ -295,6 +334,8 @@ def compute_metrics(trades: list) -> dict:
         'max_win_points':      round(tdf['pnl_points'].max(), 2),
         'max_loss_points':     round(tdf['pnl_points'].min(), 2),
         'max_drawdown_points': round(max_dd, 2),
+        'max_drawdown_duration': max_dd_dur,
+        'avg_drawdown_duration': avg_dd_dur,
         'avg_days_held':       round(tdf['days_held'].mean(), 1),
         'max_consec_wins':     max_consec(wins, True),
         'max_consec_losses':   max_consec(wins, False),
@@ -328,6 +369,8 @@ def parameter_sweep(df, start_date, end_date, rounding_range, offset_range,
                         'total_pnl_points':   m['total_pnl_points'],
                         'expectancy_points':  m['expectancy_points'],
                         'max_drawdown_points':m['max_drawdown_points'],
+                        'max_drawdown_duration':m.get('max_drawdown_duration', 0),
+                        'avg_drawdown_duration':m.get('avg_drawdown_duration', 0),
                         'avg_days_held':      m['avg_days_held'],
                     })
             except Exception:
