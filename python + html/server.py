@@ -122,7 +122,10 @@ def sweep():
             def parse_date(x):
                 if isinstance(x, (int, float)) or (isinstance(x, str) and x.replace('.','',1).isdigit()):
                     return pd.to_datetime(float(x), unit='D', origin='1899-12-30')
-                return pd.to_datetime(x, dayfirst=True)
+                dt = pd.to_datetime(x, dayfirst=True)
+                if hasattr(dt, 'tz') and dt.tz is not None:
+                    return dt.tz_localize(None)
+                return dt
             df['date'] = df['date'].apply(parse_date)
             df = df.set_index('date').sort_index()
             for col in ['open', 'high', 'low', 'close']:
