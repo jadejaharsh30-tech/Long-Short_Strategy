@@ -43,12 +43,18 @@ python backtest_engine.py --file data.csv    # local CSV/Excel instead of yfinan
 
 ## Architecture
 
-The strategy engine is implemented **four times**, and they must be kept in sync when strategy logic changes:
+The strategy engine is implemented **three times**, and strategy-logic changes must be applied to all of them:
 
 1. **`python + html/backtest_engine.py`** — the canonical Python engine. `run_backtest()` is the FLAT/LONG/SHORT state machine; `compute_metrics()` builds the stats dict (win rate, profit factor, max drawdown, drawdown durations, etc.); `parameter_sweep()` grids rounding × offset. Also a CLI.
 2. **`frontend/src/App.jsx`** — the React dashboard contains a full JS port (`runEngine` + `calcM`) used when the Flask server is offline or when the user uploads their own CSV/Excel/JSON data. When the server is up and no file is uploaded, it POSTs to the server instead.
-3. **`LongShortBacktest.jsx`** (repo root) — a standalone single-file copy of the React component that `frontend/src/App.jsx` mirrors. Edits to one usually belong in the other.
-4. **`python + html/backtest_dashboard.html`** — a self-contained HTML dashboard (Chart.js + SheetJS via CDN) that calls the Flask server at `localhost:5000`.
+3. **`LongShortBacktest.jsx`** (repo root) — a standalone single-file variant of the React component. It is NOT an exact mirror of `App.jsx`: the two have diverged (see below). Determine which one the user cares about before porting a change.
+
+**`python + html/backtest_dashboard.html`** is a fourth UI (Chart.js + SheetJS via CDN) but has **no local engine** — it always POSTs to the Flask server at `localhost:5000`, including for uploaded files (uploads go in the request body as `ohlcv` rows). The React app, by contrast, runs uploaded data through its local JS engine and never sends uploads to the server.
+
+### Known divergences between the JS engines (as of the current HEAD)
+
+- `frontend/src/App.jsx`'s `runEngine` is **missing the mark-to-market force-close** of open positions at the end date; both `backtest_engine.py` and `LongShortBacktest.jsx` have it. Expect one fewer trade and different totals from the local engine when a position is open at the end.
+- Drawdown durations are computed differently: Python and `LongShortBacktest.jsx` use calendar days between trade exit dates; `App.jsx` counts bars in a per-bar `dailyPnL` series. The numbers are not comparable across implementations.
 
 **`python + html/server.py`** is a thin Flask REST layer over the engine: `GET /health`, `GET /api/tickers`, `GET /api/ohlcv`, `POST /api/backtest`, `POST /api/sweep`. Backtest/sweep requests may include an `ohlcv` array of uploaded rows, which bypasses yfinance; that path parses Excel serial dates and day-first date strings.
 
@@ -65,3 +71,10 @@ Other invariants: the first bar only sets the anchor (no trade); trade PnL is `p
 ### Data files
 
 `python + html/original files/` holds TradingView CSV exports (daily/weekly/monthly) and `python + html/upload files/` holds Excel files used to test the upload path. These are fixtures, not code.
+
+### Other gotchas
+
+- `frontend/README.md` is the stock Vite template — ignore it; this file is the real documentation.
+- Saved backtest comparisons (the "saved" tab) live only in React state — they are lost on page refresh.
+- `python + html/__pycache__/*.pyc` and `test_output.txt` are git-tracked despite `.gitignore` covering them (committed before the ignore rule); don't let edits to them creep into diffs.
+- Python's `compute_metrics` returns `profit_factor: float('inf')` when there are no losers, which serializes as bare `Infinity` in the JSON response; the JS engines use the string `"∞"`. Frontend code must handle both.
